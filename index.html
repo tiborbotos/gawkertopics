@@ -1,0 +1,661 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<script src="http://jashkenas.github.io/underscore/underscore-min.js"></script>
+<script src="http://visjs.org/dist/vis.js"></script>
+<script src="http://code.jquery.com/jquery-2.1.1.min.js"></script>
+<meta charset="utf-8">
+<link href="http://visjs.org/dist/vis.css" rel="stylesheet" type="text/css">
+<script src="http://d3js.org/d3.v3.min.js"></script>
+<title>Gawker Stats</title>
+<style>
+
+    body {font-family: sans-serif; font-size: 12px;}
+
+    #tooltip {
+        color: white;
+        opacity: .9;
+        background: #222;
+        padding: 5px;
+        /*border: 1px solid lightgrey;*/
+        border-radius: 5px;
+        position: fixed;
+        z-index: 10;
+        visibility: hidden;
+        pointer-events: none;
+        padding: 10px;
+        right: 10px;
+        top: 20px;
+        width: 30%;
+    }
+    #circle circle {
+        fill: none;
+        pointer-events: all;
+    }
+    path.group {
+        fill-opacity: .8;
+    }
+    path.chord {
+        fill-opacity: .8;
+        stroke: #000;
+        stroke-width: .25px;
+    }
+    #circle:hover path.fade {
+        display: none;
+    }
+
+    .background {
+        z-index: -100;
+        opacity: 0.7;
+        background: url('https://38.media.tumblr.com/be0e113d3e433b5c2c82d1a47382c9d6/tumblr_niwjh6pCJw1rjlj53o1_500.gif');
+        background-size: cover;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+    }
+
+</style>
+</head>
+
+<body>
+<div class="background" style="visibility: hidden">
+</div>
+<div class="selector">
+    <p style="  font-size: 20px;
+  font-family: monospace;
+  color: rgb(129, 1, 173);
+  margin: 0 auto;
+  width: 444px;">
+        Hey you all!<br><br>
+        I just wanted to tell you that<br/>
+        It was a great experience!!<br/>
+        I loved working here (still do)!<br/>
+        Learned a lot from you guys!<br>&nbsp;<br>
+
+        Thanxx! Very so much!<br/>
+        Köszönöm szépen!<br>&nbsp;<br>
+
+        But the thing is, we could<br> 
+        implement this whole kinja<br>
+        in php like in 2 days. :D<br/>&nbsp;<br>
+        Have fun, I'll miss you all!<br/>&nbsp;<br>
+
+        And now is my goodbye present<br>
+        Such data visualization, wow!<br/><br/>
+        <a id="gcom" href="#">Gawker.com</a>&nbsp;
+        <a id="chu" href="#">Cink.hu</a><br>&nbsp;<br>
+
+        <span id="pages" style="display: none">
+            (its going to take a while)<br>
+
+            <a id="p1" href="#">one page</a>&nbsp;
+            <a id="p2" href="#">make it two</a>&nbsp;
+            <a id="p3" href="#">három a magyar igazság!</a><br>&nbsp;<br>
+        </span>
+</div>
+
+<div id="tooltip" style="visibility: hidden;"></div>
+
+<script>
+var baseUrl = 'http://api.kinja.com/api/core/blog/879/latest';
+
+function stripHTML(dirtyString) {
+    var container = document.createElement('div');
+    container.innerHTML = dirtyString;
+    return container.textContent || container.innerText;
+}
+
+var nodes = {},
+    paths = {};
+
+var tagMatchValue = 6,
+    minTagLengthForDetailedSearch = 6, // if tags are containing at least this many characters
+    partionTagMathCorrection = 2, // if tags are matched for at least minTagLengthForDetailedSearch length
+    minWordLengthToCheck = 6, // 
+    shortWordMaxLength = 8,
+    shortWordMatchValue = 0.1,
+    wordMatchValue = 0.8,
+    minConnectionValue = 3, // the minimal value we need to consider something connected to something
+    sharedLinkMatchValue = 4, // if both article includes the same link
+    doubleBackLinkedValue = 10, // if both article has the link for each other
+    singleBackLinkedValue = 7; // only one article has the link for the other
+
+var PostsLoader = (function () {
+    function PostsLoader(url, maxPagesToLoad) {
+        this.url = url;
+        this.loadFrom = undefined;
+        this.pageLoaded = 0;
+        this.maxPagesToLoad = maxPagesToLoad || 1;
+    }
+
+    function stripHTML(dirtyString) {
+        var container = document.createElement('div');
+        container.innerHTML = dirtyString;
+        return container.textContent || container.innerText;
+    }
+
+    PostsLoader.prototype.loadPosts = function (onPostsLoaded) {
+        var self = this,
+            postsLoaded = function (rawPosts) {
+                if (_.isUndefined(self.posts)) {
+                    self.posts = [];  
+                }
+
+                _.each(rawPosts, function (item) {
+                    var post = item.post;
+                    post.plainText = stripHTML(post.original);
+                    post.label = post.headline.trim() || post.authorBlogName;
+                    self.posts.push(post);
+                });
+
+                if (self.loadFrom === undefined) {
+                    onPostsLoaded();
+                } else {
+                    loadPostsFrom();
+                }
+            },
+            loadPostsFrom = function () {
+                var url = self.url;
+                if (self.loadFrom !== undefined) {
+                    url += '?startTime=' + self.loadFrom;
+                }
+                $.get(url, 
+                    function (resp) {
+                        if (resp &&
+                            resp.meta &&
+                            resp.meta.success) {
+                            if (resp.data.pagination &&
+                                resp.data.pagination.next) {
+                                self.loadFrom = resp.data.pagination.next.startTime;
+                                self.pageLoaded += 1;
+                            }
+                            if (self.pageLoaded === self.maxPagesToLoad) {
+                                self.loadFrom = undefined;
+                            }
+                            postsLoaded(resp.data.items);
+                        } else {
+                            console.log('ERRROR ' + url, resp);
+                        }
+                    }
+                );
+            };
+
+        loadPostsFrom();
+    };
+
+    function tagRelevance(post1, post2) {
+        var connection = 0;
+        _.each(post1.tags, function (tag) {
+            var v = _.findWhere(post2.tags, tag);
+
+            if (_.isUndefined(v)) {
+                if (tag.name.length >= minTagLengthForDetailedSearch) {
+                    var vList = _.filter(post2.tags, function (tag2) {
+                        return (tag.name.indexOf(tag2.name) > -1);
+                    });
+
+                    connection += (vList.length || 0 * partionTagMathCorrection);
+                }
+            } else {
+                connection += tagMatchValue;    
+            }
+        });
+        return connection;
+    }
+
+    function wordRelevance(post1, post2) {
+        var words1 = _.filter(post1.plainText.split(/[ ,\.!?:;]+/), function (word) { 
+            return word.length >= minWordLengthToCheck;
+        });
+        var words2 = _.filter(post2.plainText.split(/[ ,\.!?:;]+/), function (word) { 
+            return word.length >= minWordLengthToCheck;
+        });
+      
+        var wordsConnection = 0;
+        _.each(words1, function (word1) {
+            var W1 = word1.toUpperCase();
+            var word1Count = _.filter(words2, function (word2) { 
+                return word2.toUpperCase() === W1;
+            }).length;
+            if (word1.length <= shortWordMaxLength) {
+                wordsConnection += (word1Count * shortWordMatchValue);
+            } else {
+                wordsConnection += (word1Count * wordMatchValue);
+            }
+        });
+        return wordsConnection;
+    }
+
+    function linkRelevance(post1, post2) {
+        var patt = /\<a.*?href="([^\'\"]+)/g,
+            links1 = [],
+            links2 = [],
+            match,
+            commonLinkCount;
+        while (match = patt.exec(post1.original)) {
+            links1.push(match[1]);
+        }
+        while (match = patt.exec(post2.original)) {
+            links2.push(match[1]);
+        }
+
+        commonLinkCount = _.intersection(links1, links2).length;
+        return commonLinkCount * sharedLinkMatchValue;
+    }
+
+    function backLinkRelevance(post1, post2) {
+        var link1 = post1.permalink,
+            link2 = post2.permalink;
+
+        if (post1.original.indexOf(link2) > -1 && post2.original.indexOf(link1) > -1) {
+            return doubleBackLinkedValue;
+        } else {
+            if (post1.original.indexOf(link2) > -1 || post2.original.indexOf(link1) > -1) {
+                return singleBackLinkedValue;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    PostsLoader.prototype.findRelevance = function (onComplete) {
+        var posts = this.posts,
+            postsMap = {},
+            paths = {},
+            detailedPaths = {};
+
+        _.each(posts, function (post1) {
+            if (!paths[post1.id]) {
+                paths[post1.id] = {};
+                detailedPaths[post1.id] = {};
+            }
+            postsMap[post1.id] = post1;
+            _.each(posts, function (post2) {
+                var connection = 0,
+                    sameTags = 0;
+                if (post2.id !== post1.id) {
+                    if (post2.id == 1675737470) {
+                        //debugger;
+                    }
+                    var tagR = tagRelevance(post1, post2),
+                        wordR = wordRelevance(post1, post2),
+                        linkR = linkRelevance(post1, post2),
+                        backLinkR = backLinkRelevance(post1, post2); 
+
+                    connection += tagR + wordR + linkR + backLinkR; 
+                    // check links
+
+                    if (connection != 0) {
+                      paths[post1.id][post2.id] = connection;  
+                      detailedPaths[post1.id][post2.id] = {
+                        tag: tagR,
+                        word: wordR,
+                        link: linkR,
+                        backLink : backLinkR
+                      }
+                    }
+                }
+            });
+        });
+
+        this.detailedPaths = detailedPaths;
+        this.paths = paths;
+        this.postsMap = postsMap;
+        onComplete.call(this, this.paths);
+    };
+
+    PostsLoader.prototype.createGraph = function () {
+        var edges = [],
+            paths = this.paths;
+    
+        _.each(paths, function (path, post1Id) {
+            var highest = 0,
+            hihestPostId;
+            _.each(path, function (p, post2Id) {
+            if (p > highest) {
+                highest = p;
+                hihestPostId = post2Id;
+                }
+            });
+            if (hihestPostId && highest > minConnectionValue) {
+                edges.push({from: post1Id, to: hihestPostId, conn: highest});
+            }
+        });
+        
+        var container = document.getElementById('container');
+        var data = {
+            nodes: this.posts,
+            edges: edges
+        };
+        var options = {
+            physics: {barnesHut:{springLength:120}}, // this is the correct way to set the length of the springs
+            clustering: {
+                enabled: true
+            },
+            stabilize: true
+        };
+        var network = new vis.Network(container, data, options);
+        console.log('Edges', edges);
+    };
+  
+    return PostsLoader;
+})();
+
+
+// ACTION IS HERE
+
+var blogId,maxPagesToLoad,postsLoader;
+$('#gcom').click(function () {
+    blogId = 7;
+    $('#pages').show();
+});
+$('#chu').click(function () {
+    blogId = 879;
+    $('#pages').show();
+});
+$('#p1').click(function () { maxPagesToLoad = 1;start();});
+$('#p2').click(function () { maxPagesToLoad = 2;start();});
+$('#p3').click(function () { maxPagesToLoad = 3;start();});
+
+
+function start() {
+    var url = 'http://api.kinja.com/api/core/blog/' + blogId + '/latest';
+    $('.background').css('visibility', 'visible');
+    $('.selector').remove();
+    postsLoader = new PostsLoader(url, maxPagesToLoad);
+    postsLoader.loadPosts(function () {
+        postsLoader.findRelevance(function (paths) {
+            console.log('Postsmap', this.postsMap)
+            console.log('Paths ', this.paths);
+            var data = [];
+            _.each(this.paths, function (post, postId) {
+                var imports = [],
+                    size = 0;
+                    name = this.postsMap[postId].label;
+
+                _.each(post, function (relatedPostCorrelation, relatedPostId) {
+                    if (relatedPostCorrelation > minConnectionValue) {
+                        size += relatedPostCorrelation;
+                        imports.push(this.postsMap[relatedPostId].label);
+                    }
+                }.bind(this));
+
+                data.push({
+                    postId: postId,
+                    name: name,
+                    size: size,
+                    imports: imports
+                });
+            }.bind(this));
+
+            setTimeout(function () {
+                $('.background').remove();
+                $('.selector').remove();
+                prepareD3Chord(data);
+            }, (5 - maxPagesToLoad) * 500 );
+        });
+    });
+}
+
+//*******************************************************************
+//  CHORD
+//*******************************************************************
+
+
+// Chord mapper
+function chordMpr (data) {
+  var mpr = {}, mmap = {}, n = 0,
+      matrix = [], filter, accessor;
+ 
+  mpr.setFilter = function (fun) {
+    filter = fun;
+    return this;
+  },
+  mpr.setAccessor = function (fun) {
+    accessor = fun;
+    return this;
+  },
+  mpr.getMatrix = function () {
+    matrix = [];
+    _.each(mmap, function (a) {
+      if (!matrix[a.id]) matrix[a.id] = [];
+      _.each(mmap, function (b) {
+       var recs = _.filter(data, function (row) {
+          return filter(row, a, b);
+        })
+        matrix[a.id][b.id] = accessor(recs, a, b);
+      });
+    });
+    return matrix;
+  },
+  mpr.getMap = function () {
+    return mmap;
+  },
+  mpr.printMatrix = function () {
+    _.each(matrix, function (elem) {
+      console.log(elem);
+    })
+  },
+  mpr.addToMap = function (value, info) {
+    if (!mmap[value]) {
+      mmap[value] = { name: value, id: n++, data: info, postId:  info.postId}
+    }
+  },
+  mpr.addValuesToMap = function (varName, info) {
+    var values = _.uniq(_.pluck(data, varName));
+    _.map(values, function (v) {
+      if (!mmap[v]) {
+        mmap[v] = { name: v, id: n++, data: info, postId:  info.postId }
+      }
+    });
+    return this;
+  }
+  return mpr;
+}
+// Chord reader
+function chordRdr (matrix, mmap) {
+  return function (d) {
+    var i,j,s,t,g,m = {};
+    if (d.source) {
+      i = d.source.index; j = d.target.index;
+      s = _.where(mmap, {id: i });
+      t = _.where(mmap, {id: j });
+      m.sname = s[0].name;
+      m.sdata = d.source.value;
+      m.svalue = +d.source.value;
+      m.stotal = _.reduce(matrix[i], function (k, n) { return k + n }, 0);
+      m.spostId = s[0].postId;
+      m.tname = t[0].name;
+      m.tpostId = t[0].postId;
+      m.tdata = d.target.value;
+      m.tvalue = +d.target.value;
+      m.ttotal = _.reduce(matrix[j], function (k, n) { return k + n }, 0);
+    } else {
+      g = _.where(mmap, {id: d.index });
+      m.postId = g[0].postId;
+      m.gname = g[0].name;
+      m.gdata = g[0].data;
+      m.gvalue = d.value;
+    }
+    m.mtotal = _.reduce(matrix, function (m1, n1) { 
+      return m1 + _.reduce(n1, function (m2, n2) { return m2 + n2}, 0);
+    }, 0);
+    return m;
+  }
+}
+
+function prepareD3Chord(data) {
+    var mpr = chordMpr(data);
+
+    _.each(data, function (elem) {
+        mpr.addToMap(elem.name, elem)
+    });
+
+    mpr.setFilter(function (row, a, b) {
+        return (row.name === a.name)
+        })
+        .setAccessor(function (recs, a, b) {
+            if (!recs[0]) return 0;
+            var n = 0;
+            _.each(recs, function (r) {
+                _.each(r.imports, function (i) {
+                    if (i === b.name) n++;
+                });
+            });
+            return n;
+        });
+
+    drawChords(mpr.getMatrix(), mpr.getMap());
+}
+
+function drawChords (matrix, mmap) {
+
+    var w = $('body').width(), h = Math.max($('body').height(), 750), r1 = h / 2.7, r0 = r1 - 100;
+
+    var fill = d3.scale.ordinal()
+        .range(['#c7b570','#c6cdc7','#335c64','#768935','#507282','#5c4a56','#aa7455','#574109','#837722','#73342d','#0a5564','#9c8f57','#7895a4','#4a5456','#b0a690','#0a3542',]);
+
+    var chord = d3.layout.chord()
+        .padding(.04)
+        .sortSubgroups(d3.descending)
+        .sortChords(d3.descending);
+
+    var arc = d3.svg.arc()
+        .innerRadius(r0)
+        .outerRadius(r0 + 20);
+
+    var svg = d3.select("body").append("svg:svg")
+        .attr("width", w)
+        .attr("height", h)
+        .append("svg:g")
+        .attr("id", "circle")
+        .attr("transform", "translate(" + w / 2 + "," + h / 2 + ")");
+
+    svg.append("circle")
+        .attr("r", r0 + 20);
+
+    var rdr = chordRdr(matrix, mmap);
+    chord.matrix(matrix);
+
+    var g = svg.selectAll("g.group")
+        .data(chord.groups())
+        .enter().append("svg:g")
+        .attr("class", "group")
+        .on("mouseover", mouseover)
+        .on("click", function (d) {
+            var postId = rdr(d).postId;
+            window.open(postsLoader.postsMap[postId].permalink);
+        })
+        .on("mouseout", function (d) { d3.select("#tooltip").style("visibility", "hidden") });
+
+    g.append("svg:path")
+        .style("stroke", "black")
+        .style("fill", function(d) { return fill(rdr(d).gname); })
+        .attr("d", arc);
+
+    g.append("svg:text")
+        .each(function(d) { d.angle = (d.startAngle + d.endAngle) / 2; })
+        .attr("dy", ".35em")
+        .style("font-family", "helvetica, arial, sans-serif")
+        .style("font-size", "10px")
+        .attr("text-anchor", function(d) { return d.angle > Math.PI ? "end" : null; })
+        .attr("transform", function(d) {
+          return "rotate(" + (d.angle * 180 / Math.PI - 90) + ")"
+              + "translate(" + (r0 + 26) + ")"
+              + (d.angle > Math.PI ? "rotate(180)" : "");
+        })
+        .text(function(d) { return rdr(d).gname; });
+
+    var chordPaths = svg.selectAll("path.chord")
+        .data(chord.chords())
+        .enter().append("svg:path")
+        .attr("class", "chord")
+        .style("stroke", function(d) { return d3.rgb(fill(rdr(d).sname)).darker(); })
+        .style("fill", function(d) { return fill(rdr(d).sname); })
+        .attr("d", d3.svg.chord().radius(r0))
+        .on("mouseover", function (d) {
+            d3.select("#tooltip")
+                .style("visibility", "visible")
+                .html(chordTip(rdr(d)))
+                //.style("top", function () { return (d3.event.pageY - 170)+"px"})
+                //.style("left", function () { return (d3.event.pageX - 100)+"px";})
+        })
+        .on("mouseout", function (d) { d3.select("#tooltip").style("visibility", "hidden") });
+
+    function chordTip (d) {
+        var p = d3.format(".1%"), 
+            q = d3.format(",.2r")
+            sPost = postsLoader.postsMap[d.spostId],
+            tPost = postsLoader.postsMap[d.tpostId];
+
+        return '<span style="font-size: 15px">' + sPost.label + " → " + tPost.label + "<br/><br/></span>" 
+            + '<span style="font-family: monospace">'
+            + '<b>Relevancy</b>&nbsp;&nbsp;' + q(postsLoader.paths[sPost.id][tPost.id]) + '<br/><ul>'
+            + '<li><b>Tags</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;' + q(postsLoader.detailedPaths[sPost.id][tPost.id].tag) + '<br/></li>'
+            + '<li><b>Words</b>&nbsp;&nbsp;&nbsp;&nbsp;' + q(postsLoader.detailedPaths[sPost.id][tPost.id].word) + '<br/></li>'
+            + '<li><b>Links</b>&nbsp;&nbsp;&nbsp;&nbsp;' + q(postsLoader.detailedPaths[sPost.id][tPost.id].link) + '<br/></li>'
+            + '<li><b>Backlink</b>&nbsp;' + q(postsLoader.detailedPaths[sPost.id][tPost.id].backLink) + '<br/></li></ul></span>'
+          /*+ ": " + q(d.svalue) + "<br/>"
+          + p(d.svalue/d.stotal) + " of " + d.sname + "'s Total (" + q(d.stotal) + ")<br/>"
+          + p(d.svalue/d.mtotal) + " of Matrix Total (" + q(d.mtotal) + ")<br/>"
+          + "<br/>"
+          + d.tname + " → " + d.sname
+          + ": " + q(d.tvalue) + "<br/>"
+          + p(d.tvalue/d.ttotal) + " of " + d.tname + "'s Total (" + q(d.ttotal) + ")<br/>"
+          + p(d.tvalue/d.mtotal) + " of Matrix Total (" + q(d.mtotal) + ")";*/
+    }
+
+    function groupTip (d) {
+        var p = d3.format(".1%"), 
+            q = d3.format(",.2r"),
+            post = postsLoader.postsMap[d.postId],
+            author = post.author,
+            connections = [],
+            conns = '',
+            connCount = 0
+
+        _.each(postsLoader.paths[post.id], function (relevancy, connectedPostId) {
+            if (relevancy > minConnectionValue) {
+                connections.push({
+                    relevancy: relevancy,
+                    label: postsLoader.postsMap[connectedPostId].label
+                });
+            }
+        });
+        _.each(connections.sort(function (a, b) {
+            return a.relevancy === b.relevancy ? 0 : a.relevancy > b.relevancy ? -1 : 1;
+        }), function (post) {
+            conns += '<li>' + post.label +'</li>';
+            connCount += 1
+            if (connCount === 3) 
+                conns += '<span style="color: gray">';
+        });
+
+        return '<span style="font-size: 15px">' + post.label + "</span><br/>"
+            + '<span style="font-size: 13px; color: #CCC">' + _.pluck(post.tags, 'name').join(',') + '</span><br/>'
+            + '<span style="color: gray;font-size: 10px;"><em>' + author.displayName + "</em><br/>" 
+            + post.replyCount + " replies<br/></span><br><ul>" + conns + "</ul>";
+    }
+
+    function mouseover(d, i) {
+        d3.select("#tooltip")
+            .style("visibility", "visible")
+            .html(groupTip(rdr(d)))
+            //.style("top", function () { return (d3.event.pageY - 80)+"px"})
+            //.style("left", function () { return (d3.event.pageX - 130)+"px";})
+
+        chordPaths.classed("fade", function(p) {
+            return p.source.index != i
+                && p.target.index != i;
+        });
+    }
+}
+
+
+
+</script>
+</body>
+</html>
